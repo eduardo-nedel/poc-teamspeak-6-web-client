@@ -255,12 +255,19 @@ export class AudioBridge {
     }
   }
 
+  private lastSentAt: number = 0;
+
   /**
    * Transmite áudio do microfone do usuário para o TS6 (Opus) e para outros clientes web
    */
   public broadcastAudio(senderId: string, audioChunk: Buffer): void {
     const sender = this.users.get(senderId);
     if (!sender || sender.isMuted) return;
+
+    // Tracker de tempo para diagnóstico de Jitter
+    const now = Date.now();
+    const delta = this.lastSentAt > 0 ? now - this.lastSentAt : 0;
+    this.lastSentAt = now;
 
     sender.stats.micPacketsReceived++;
     sender.stats.micBytesReceived += audioChunk.length;
@@ -290,15 +297,13 @@ export class AudioBridge {
               sender.stats.opusBytesSent += encoded.length;
             }
           } catch (encErr: any) {
-            // Se o encoder Wasm corromper, recria a instância
             sender.opusEncoder = new OpusScript(48000, 2, OpusScript.Application.AUDIO);
           }
         }
 
-        const now = Date.now();
-        if (now - sender.stats.lastMicLogAt > 1500) {
+        if (now - sender.stats.lastMicLogAt > 2000) {
           sender.stats.lastMicLogAt = now;
-          console.log(`[${new Date().toISOString()}] [${sender.correlationId}] [WEB->TS6] 🎙️ Microfone transmitido! Chunks recebidos: ${sender.stats.micPacketsReceived} (${sender.stats.micBytesReceived}B), Frames Opus enviados ao TS6: ${sender.stats.opusFramesSent} (${sender.stats.opusBytesSent}B)`);
+          console.log(`[${new Date().toISOString()}] [${sender.correlationId}] [WEB->TS6] 🎙️ Delta tempo envio: ${delta}ms. Frames enviados: ${sender.stats.opusFramesSent}`);
         }
       } catch (err: any) {
         console.error(`[${new Date().toISOString()}] [${sender.correlationId}] [OPUS-ENC] ❌ Erro ao codificar voz:`, err.message);
