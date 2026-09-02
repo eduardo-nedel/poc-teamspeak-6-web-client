@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { setupAudioWorklet } from '../audio/AudioWorkletManager';
 
 interface UseVoiceAudioProps {
   isMuted: boolean;
@@ -41,7 +42,7 @@ export function useVoiceAudio({
   const streamRef = useRef<MediaStream | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const isTalkingRef = useRef<boolean>(false);
 
   // Audio Playback context for incoming audio streams
@@ -94,18 +95,17 @@ export function useVoiceAudio({
       analyser.fftSize = 256;
       analyserRef.current = analyser;
 
-      // ScriptProcessor para coletar dados brutos de áudio PCM
-      const processor = audioCtx.createScriptProcessor(2048, 1, 1);
-      processorRef.current = processor;
+      // SETUP AudioWorklet
+      const workletNode = await setupAudioWorklet(audioCtx);
+      workletNodeRef.current = workletNode;
 
       source.connect(analyser);
-      analyser.connect(processor);
-      processor.connect(audioCtx.destination);
+      analyser.connect(workletNode);
+      workletNode.connect(audioCtx.destination);
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      workletNode.port.onmessage = (e) => {
+        const inputData = e.data as Float32Array;
 
-      // Loop de processamento de áudio
-      processor.onaudioprocess = (e) => {
         if (isMutedRef.current) {
           if (isTalkingRef.current) {
             isTalkingRef.current = false;
@@ -115,9 +115,7 @@ export function useVoiceAudio({
           return;
         }
 
-        const inputData = e.inputBuffer.getChannelData(0);
-
-        // Medidor de nível: usa o AnalyserNode já conectado ao source do mic
+        // Medidor de nível: segue igual, usando o AnalyserNode ligado ao source
         if (analyser) {
           const dataArray = new Uint8Array(analyser.frequencyBinCount);
           analyser.getByteTimeDomainData(dataArray);
@@ -130,7 +128,6 @@ export function useVoiceAudio({
           const normalizedLevel = Math.min(100, Math.round(peak * 200));
           setAudioLevel(normalizedLevel);
 
-          // Indicador de "falando" via Analyser (não bloqueia envio)
           const talking = normalizedLevel > 1;
           if (talking !== isTalkingRef.current) {
             isTalkingRef.current = talking;
@@ -138,8 +135,7 @@ export function useVoiceAudio({
           }
         }
 
-        // SEMPRE envia o quadro PCM Int16 quando não mudo
-        // Remove qualquer gate de VAD — testa o pipeline ponta a ponta
+        // Conversão PCM16
         const pcm16 = new Int16Array(inputData.length);
         for (let i = 0; i < inputData.length; i++) {
           const s = Math.max(-1, Math.min(1, inputData[i]));
@@ -160,9 +156,9 @@ export function useVoiceAudio({
       streamRef.current.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     }
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
+    if (workletNodeRef.current) {
+      workletNodeRef.current.disconnect();
+      workletNodeRef.current = null;
     }
     if (sourceNodeRef.current) {
       sourceNodeRef.current.disconnect();
